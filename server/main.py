@@ -1,147 +1,335 @@
-"""Minimal MCP server skeleton for Cursor Plan Governor.
-
-This is a starter skeleton, not a production implementation.
-Fill in repository logic and real MCP handlers in Cursor.
-"""
+"""Cursor Plan Governor MCP Server."""
 
 from __future__ import annotations
 
-import json
-import os
-import sys
-import uuid
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+
+from server.db.repository import PlanGovernorRepository
+from server.db.session import get_session_factory, init_db
+from server.schemas.plan import TreeNodeInput
+from server.services.diff import diff_plan_revisions
+from server.services.markdown import render_plan_markdown
+
+mcp = FastMCP("plan-governor")
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+@contextmanager
+def get_repo():
+    session_factory = get_session_factory()
+    session = session_factory()
+    try:
+        yield PlanGovernorRepository(session)
+    finally:
+        session.close()
 
 
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+def _tree_nodes(raw_tree: list[dict] | None) -> list[TreeNodeInput]:
+    if not raw_tree:
+        return []
+
+    def convert(node: dict) -> TreeNodeInput:
+        children = [_tree_nodes([child])[0] for child in node.get("children", [])]
+        return TreeNodeInput(
+            node_key=node["node_key"],
+            title=node["title"],
+            description=node.get("description"),
+            risk=node.get("risk"),
+            acceptance_criteria=node.get("acceptance_criteria"),
+            children=children,
+        )
+
+    return [convert(node) for node in raw_tree]
 
 
-class InMemoryStore:
-    def __init__(self) -> None:
-        self.requests = {}
-        self.revisions = {}
-        self.work_items = {}
+def _tree_output(tree) -> list[dict]:
+    return [node.model_dump() for node in tree]
 
-    def create_request(self, title: str, source_type: str | None, source_ref: str | None, context_summary: str | None):
-        request_id = new_id("req")
-        row = {
-            "request_id": request_id,
-            "title": title,
-            "source_type": source_type,
-            "source_ref": source_ref,
-            "context_summary": context_summary,
-            "created_at": now_iso(),
-            "status": "open",
+
+def _error(message: str) -> dict[str, Any]:
+    return {"ok": False, "error": message}
+
+
+@mcp.tool()
+def create_request(
+    title: str,
+    source_type: str | None = None,
+    source_ref: str | None = None,
+    context_summary: str | None = None,
+) -> dict:
+    """Create a new planning request entry."""
+    with get_repo() as repo:
+        row = repo.create_request(
+            title=title,
+            source_type=source_type,
+            source_ref=source_ref,
+            context_summary=context_summary,
+        )
+        return {"ok": True, "request": repo.request_to_dict(row)}
+
+
+@mcp.tool()
+def plan_feature(
+    request_id: str,
+    goal: str,
+    summary: str | None = None,
+    context_summary: str | None = None,
+    tree: list[dict] | None = None,
+) -> dict:
+    """Create the initial plan revision and persist the task tree."""
+    with get_repo() as repo:
+        if repo.get_request(request_id) is None:
+            return _error(f"request not found: {request_id}")
+
+        nodes = _tree_nodes(tree)
+        if not nodes:
+            nodes = [
+                TreeNodeInput(
+                    node_key="1",
+                    title=goal,
+                    description=context_summary or "",
+                    children=[],
+                )
+            ]
+
+        revision, output_tree = repo.save_plan_revision(
+            request_id=request_id,
+            summary=summary or goal,
+            tree=nodes,
+        )
+        revision_dict = repo.revision_to_dict(revision)
+        markdown = render_plan_markdown(revision_dict, output_tree)
+        return {
+            "ok": True,
+            "plan_revision": revision_dict,
+            "tree": _tree_output(output_tree),
+            "markdown": markdown,
         }
-        self.requests[request_id] = row
-        return row
 
-    def save_plan_revision(self, request_id: str, summary: str, tree: list[dict], based_on_revision_id: str | None = None):
-        revision_id = new_id("planrev")
-        revision_no = 1 + sum(1 for r in self.revisions.values() if r["request_id"] == request_id)
-        revision = {
-            "plan_revision_id": revision_id,
-            "request_id": request_id,
-            "revision_no": revision_no,
-            "based_on_revision_id": based_on_revision_id,
-            "summary": summary,
-            "created_at": now_iso(),
-            "status": "draft",
+
+@mcp.tool()
+def replan_feature(
+    request_id: str,
+    based_on_revision_id: str,
+    tree: list[dict],
+    changes: str | None = None,
+    constraints: str | None = None,
+    summary: str | None = None,
+) -> dict:
+    """Create a new plan revision based on an existing one without overwriting it."""
+    with get_repo() as repo:
+        if repo.get_request(request_id) is None:
+            return _error(f"request not found: {request_id}")
+
+        base_revision = repo.get_plan_revision(based_on_revision_id)
+        if base_revision is None:
+            return _error(f"revision not found: {based_on_revision_id}")
+        if base_revision.request_id != request_id:
+            return _error("based_on_revision_id does not belong to request_id")
+
+        nodes = _tree_nodes(tree)
+        if not nodes:
+            return _error("tree is required for replan_feature")
+
+        revision_summary = summary or changes or f"Replan based on {based_on_revision_id}"
+        revision, output_tree = repo.save_plan_revision(
+            request_id=request_id,
+            summary=revision_summary,
+            tree=nodes,
+            based_on_revision_id=based_on_revision_id,
+        )
+        revision_dict = repo.revision_to_dict(revision)
+        markdown = render_plan_markdown(revision_dict, output_tree)
+        return {
+            "ok": True,
+            "plan_revision": revision_dict,
+            "tree": _tree_output(output_tree),
+            "markdown": markdown,
+            "constraints": constraints,
         }
-        self.revisions[revision_id] = revision
-        self.work_items[revision_id] = tree
-        return revision
 
 
-STORE = InMemoryStore()
+@mcp.tool()
+def get_plan_revision(
+    plan_revision_id: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Get a full plan revision and its task tree."""
+    if not plan_revision_id and not request_id:
+        return _error("plan_revision_id or request_id is required")
 
+    with get_repo() as repo:
+        revision = None
+        if plan_revision_id:
+            revision = repo.get_plan_revision(plan_revision_id)
+        elif request_id:
+            revision = repo.get_latest_revision(request_id)
 
-def tool_create_request(arguments: dict) -> dict:
-    row = STORE.create_request(
-        title=arguments["title"],
-        source_type=arguments.get("source_type"),
-        source_ref=arguments.get("source_ref"),
-        context_summary=arguments.get("context_summary"),
-    )
-    return {"ok": True, "request": row}
+        if revision is None:
+            return _error("plan revision not found")
 
-
-def tool_plan_feature(arguments: dict) -> dict:
-    request_id = arguments["request_id"]
-    goal = arguments["goal"]
-    tree = arguments.get("tree") or [
-        {
-            "node_key": "1",
-            "title": goal,
-            "description": arguments.get("context_summary") or "",
-            "children": [],
+        tree = repo.get_tree_for_revision(revision.plan_revision_id)
+        return {
+            "ok": True,
+            "plan_revision": repo.revision_to_dict(revision),
+            "tree": _tree_output(tree),
         }
-    ]
-    revision = STORE.save_plan_revision(
-        request_id=request_id,
-        summary=arguments.get("summary") or goal,
-        tree=tree,
-        based_on_revision_id=arguments.get("based_on_revision_id"),
-    )
-    markdown = f"# Plan Revision {revision['revision_no']}\n\n- request_id: {request_id}\n- revision_id: {revision['plan_revision_id']}\n- summary: {revision['summary']}\n"
-    return {
-        "ok": True,
-        "plan_revision": revision,
-        "tree": tree,
-        "markdown": markdown,
-    }
 
 
-def tool_get_plan_revision(arguments: dict) -> dict:
-    revision_id = arguments["plan_revision_id"]
-    revision = STORE.revisions.get(revision_id)
-    tree = STORE.work_items.get(revision_id, [])
-    if not revision:
-        return {"ok": False, "error": f"revision not found: {revision_id}"}
-    return {"ok": True, "plan_revision": revision, "tree": tree}
+@mcp.tool()
+def diff_plan_revisions(base_revision_id: str, target_revision_id: str) -> dict:
+    """Compare two plan revisions and report structural changes."""
+    with get_repo() as repo:
+        base_revision = repo.get_plan_revision(base_revision_id)
+        target_revision = repo.get_plan_revision(target_revision_id)
+        if base_revision is None:
+            return _error(f"base revision not found: {base_revision_id}")
+        if target_revision is None:
+            return _error(f"target revision not found: {target_revision_id}")
+
+        base_items = repo.get_work_items_for_revision(base_revision_id)
+        target_items = repo.get_work_items_for_revision(target_revision_id)
+        diff = diff_plan_revisions(base_items, target_items)
+        return {"ok": True, "diff": diff.model_dump()}
 
 
-def dispatch(method: str, arguments: dict) -> dict:
-    if method == "create_request":
-        return tool_create_request(arguments)
-    if method == "plan_feature":
-        return tool_plan_feature(arguments)
-    if method == "get_plan_revision":
-        return tool_get_plan_revision(arguments)
-    return {"ok": False, "error": f"unknown method: {method}"}
-
-
-# Note:
-# This is a deliberately simple JSON-over-stdio dev skeleton, not a full MCP SDK server.
-# Replace with proper MCP SDK implementation in Cursor.
-def main() -> int:
-    sys.stdout.write(json.dumps({
-        "name": "cursor-plan-governor-dev",
-        "mode": "skeleton",
-        "message": "Replace this transport with a real MCP SDK server implementation."
-    }) + "\n")
-    sys.stdout.flush()
-
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+@mcp.tool()
+def approve_work_item(
+    work_item_id: str,
+    reviewer: str,
+    comment: str | None = None,
+) -> dict:
+    """Approve a work item and record a review event."""
+    with get_repo() as repo:
         try:
-            req = json.loads(line)
-            method = req.get("method")
-            arguments = req.get("arguments") or {}
-            resp = dispatch(method, arguments)
-        except Exception as exc:
-            resp = {"ok": False, "error": str(exc)}
-        sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
-    return 0
+            item, event = repo.approve_work_item(work_item_id, reviewer, comment)
+        except ValueError as exc:
+            return _error(str(exc))
+        return {
+            "ok": True,
+            "work_item": repo.work_item_to_dict(item),
+            "review_event": repo.review_event_to_dict(event),
+        }
+
+
+@mcp.tool()
+def reject_work_item(
+    work_item_id: str,
+    reviewer: str,
+    comment: str | None = None,
+) -> dict:
+    """Reject a work item and record a review event."""
+    with get_repo() as repo:
+        try:
+            item, event = repo.reject_work_item(work_item_id, reviewer, comment)
+        except ValueError as exc:
+            return _error(str(exc))
+        return {
+            "ok": True,
+            "work_item": repo.work_item_to_dict(item),
+            "review_event": repo.review_event_to_dict(event),
+        }
+
+
+@mcp.tool()
+def merge_work_items(
+    target_work_item_id: str,
+    source_work_item_ids: list[str],
+    reviewer: str,
+    comment: str | None = None,
+    merged_title: str | None = None,
+    merged_description: str | None = None,
+) -> dict:
+    """Merge multiple work items into a target work item."""
+    with get_repo() as repo:
+        try:
+            item, event = repo.merge_work_items(
+                target_work_item_id=target_work_item_id,
+                source_work_item_ids=source_work_item_ids,
+                reviewer=reviewer,
+                comment=comment,
+                merged_title=merged_title,
+                merged_description=merged_description,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+        return {
+            "ok": True,
+            "work_item": repo.work_item_to_dict(item),
+            "review_event": repo.review_event_to_dict(event),
+        }
+
+
+@mcp.tool()
+def split_work_item(
+    work_item_id: str,
+    children: list[dict],
+    reviewer: str,
+    comment: str | None = None,
+) -> dict:
+    """Split a work item by adding child nodes under it."""
+    with get_repo() as repo:
+        try:
+            created, event = repo.split_work_item(
+                work_item_id=work_item_id,
+                children=children,
+                reviewer=reviewer,
+                comment=comment,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+        return {
+            "ok": True,
+            "children": [repo.work_item_to_dict(row) for row in created],
+            "review_event": repo.review_event_to_dict(event),
+        }
+
+
+@mcp.tool()
+def link_commit_to_work_item(
+    work_item_id: str,
+    repo: str,
+    commit_sha: str | None = None,
+    pr_ref: str | None = None,
+) -> dict:
+    """Link a commit or PR reference to a work item."""
+    with get_repo() as repo_obj:
+        try:
+            link = repo_obj.link_commit_to_work_item(
+                work_item_id=work_item_id,
+                repo=repo,
+                commit_sha=commit_sha,
+                pr_ref=pr_ref,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+        return {"ok": True, "link": repo_obj.link_to_dict(link)}
+
+
+@mcp.tool()
+def list_review_queue(
+    request_id: str | None = None,
+    plan_revision_id: str | None = None,
+) -> dict:
+    """List work items that are pending review."""
+    with get_repo() as repo:
+        items = repo.list_review_queue(
+            request_id=request_id,
+            plan_revision_id=plan_revision_id,
+        )
+        return {
+            "ok": True,
+            "items": [repo.work_item_to_dict(item) for item in items],
+            "count": len(items),
+        }
+
+
+def main() -> None:
+    init_db()
+    mcp.run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
