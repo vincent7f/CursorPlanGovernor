@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "plan-governor": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "./server/main.py"
+      ],
+      "env": {
+        "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db"
+      }
+    }
+  }
+}
