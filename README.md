@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 11 个 MCP Tool：`create_request`、`plan_feature`、`replan_feature`、`get_plan_revision`、`diff_plan_revisions`、`approve_work_item`、`reject_work_item`、`merge_work_items`、`split_work_item`、`link_commit_to_work_item`、`list_review_queue`
+- 12 个 MCP Tool：`get_project_setup_guide`、`create_request`、`plan_feature`、`replan_feature`、`get_plan_revision`、`diff_plan_revisions`、`approve_work_item`、`reject_work_item`、`merge_work_items`、`split_work_item`、`link_commit_to_work_item`、`list_review_queue`
 - SQLite 持久化（可通过环境变量切换数据库 URL）
 - FastMCP（`mcp` 官方 SDK）stdio 传输
 
@@ -33,6 +33,11 @@ plan-governor
 ## Cursor 配置
 
 项目已包含 [`.cursor/mcp.json`](.cursor/mcp.json)。打开本项目后，在 Cursor Settings → MCP 中确认 `plan-governor` 已加载。
+
+若尚未配置，可在对话中让 Cursor 调用 **`get_project_setup_guide`**，它会返回：
+- 完整的 `.cursor/mcp.json` 配置（含 Windows bat 启动方式）
+- Rule 模板（`.cursor/rules/plan-governance.mdc`）
+- 分步安装说明与全功能工作流
 
 环境变量（可选）：
 

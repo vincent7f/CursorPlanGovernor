@@ -12,6 +12,7 @@ from server.db.session import get_session_factory, init_db
 from server.schemas.plan import TreeNodeInput
 from server.services.diff import diff_plan_revisions
 from server.services.markdown import render_plan_markdown
+from server.services.setup_guide import build_setup_guide
 
 mcp = FastMCP("plan-governor")
 
@@ -50,6 +51,12 @@ def _tree_output(tree) -> list[dict]:
 
 def _error(message: str) -> dict[str, Any]:
     return {"ok": False, "error": message}
+
+
+@mcp.tool()
+def get_project_setup_guide(project_root: str | None = None) -> dict:
+    """Return step-by-step instructions for configuring Cursor to connect to this MCP server and enable all plan governance features."""
+    return build_setup_guide(project_root=project_root)
 
 
 @mcp.tool()
