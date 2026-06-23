@@ -282,20 +282,21 @@ def render_cursor_connection_log(project_root: Path | str | None = None) -> list
     mcp_config = build_mcp_config(root)
     mcp_json_path = root / ".cursor" / "mcp.json"
     rule_path = root / ".cursor" / "rules" / "plan-governance.mdc"
+    rule_status = "ok" if rule_path.is_file() else "missing (optional)"
     config_json = json.dumps(mcp_config, indent=2, ensure_ascii=False)
 
     lines = [
         "Cursor connection guide",
         "-----------------------",
         f"Config file: {mcp_json_path}",
-        f"Rule file:   {rule_path}",
+        f"Rule file:   {rule_path} ({rule_status})",
         "",
         "Steps:",
         "  1. Start the server: ./start-mcp-server.sh",
         "  2. Create or update .cursor/mcp.json (use plan-governor for local,",
         "     plan-governor-remote for other machines on your network).",
-        "  3. Optional: add .cursor/rules/plan-governance.mdc",
-        "     (full template via MCP tool get_project_setup_guide).",
+        "  3. Optional: add .cursor/rules/plan-governance.mdc if missing",
+        "     (template in examples/plan-governance-rule.mdc or get_project_setup_guide).",
         "  4. Open this project in Cursor.",
         "  5. Go to Settings -> MCP and confirm plan-governor is Connected.",
         "  6. Smoke test: ask Cursor to call create_request.",

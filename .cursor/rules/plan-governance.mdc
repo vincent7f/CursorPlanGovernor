@@ -1,0 +1,15 @@
+---
+description: Enforce use of plan governor MCP for planning and replanning
+globs:
+alwaysApply: true
+---
+
+For any non-trivial feature request:
+1. Do not start implementation immediately.
+2. First call create_request.
+3. Then call plan_feature to persist the initial plan tree.
+4. If the user changes scope or asks to replan, call replan_feature and create a new revision.
+5. Do not treat chat output as the only source of truth.
+6. Before implementation, explicitly mention which approved revision is being executed.
+7. During implementation, link commits/PRs via link_commit_to_work_item.
+8. Use approve_work_item / reject_work_item / list_review_queue for governance.
