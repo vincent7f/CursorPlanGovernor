@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from server.config import build_mcp_http_url, get_lan_ip, get_mcp_http_path, get_mcp_port
+from server.launcher import build_stdio_mcp_entry
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -90,48 +91,13 @@ def _detect_project_root(project_root: str | None = None) -> Path:
     return PROJECT_ROOT
 
 
-def _python_command(root: Path) -> tuple[str, list[str]]:
-    venv_python = root / ".venv" / "Scripts" / "python.exe"
-    if sys.platform == "win32" and venv_python.is_file():
-        return str(venv_python), ["-m", "server.main"]
-
-    venv_python_unix = root / ".venv" / "bin" / "python"
-    if venv_python_unix.is_file():
-        return str(venv_python_unix), ["-m", "server.main"]
-
-    return "python", ["-m", "server.main"]
-
-
-def _bat_command(root: Path) -> str | None:
-    bat_path = root / "start-mcp-server.bat"
-    if sys.platform == "win32" and bat_path.is_file():
-        return str(bat_path.resolve())
-    return None
-
-
-def _sh_command(root: Path) -> str | None:
-    sh_path = root / "start-mcp-server.sh"
-    if sys.platform != "win32" and sh_path.is_file():
-        return str(sh_path.resolve())
-    return None
-
-
 def build_mcp_config(root: Path) -> dict:
-    command, args = _python_command(root)
     local_url = f"http://127.0.0.1:{get_mcp_port()}{get_mcp_http_path()}"
     config = {
         "mcpServers": {
-            "plan-governor": {
+            "plan-governor": build_stdio_mcp_entry(root, portable=True),
+            "plan-governor-http": {
                 "url": local_url,
-            },
-            "plan-governor-stdio": {
-                "type": "stdio",
-                "command": command,
-                "args": args,
-                "env": {
-                    "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
-                    "PLAN_GOVERNOR_MCP_TRANSPORT": "stdio",
-                },
             },
         }
     }
@@ -140,28 +106,6 @@ def build_mcp_config(root: Path) -> dict:
     if lan_ip:
         config["mcpServers"]["plan-governor-remote"] = {
             "url": build_mcp_http_url(host="0.0.0.0"),
-        }
-
-    bat_command = _bat_command(root)
-    if bat_command:
-        config["mcpServers"]["plan-governor-windows-bat"] = {
-            "type": "stdio",
-            "command": bat_command,
-            "args": [],
-            "env": {
-                "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
-            },
-        }
-
-    sh_command = _sh_command(root)
-    if sh_command:
-        config["mcpServers"]["plan-governor-shell"] = {
-            "type": "stdio",
-            "command": sh_command,
-            "args": [],
-            "env": {
-                "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
-            },
         }
 
     return config
@@ -292,13 +236,11 @@ def render_cursor_connection_log(project_root: Path | str | None = None) -> list
         f"Rule file:   {rule_path} ({rule_status})",
         "",
         "Steps:",
-        "  1. Start the server: ./start-mcp-server.sh",
-        "  2. Create or update .cursor/mcp.json (use plan-governor for local,",
-        "     plan-governor-remote for other machines on your network).",
-        "  3. Optional: add .cursor/rules/plan-governance.mdc if missing",
-        "     (template in examples/plan-governance-rule.mdc or get_project_setup_guide).",
+        "  1. Use plan-governor below (launch_mcp_stdio.py picks .venv on Win/Linux).",
+        "  2. Or start ./start-mcp-server.sh / start-mcp-server.bat for HTTP mode.",
+        "  3. Ensure deps are installed: pip install -e \".[dev]\"",
         "  4. Open this project in Cursor.",
-        "  5. Go to Settings -> MCP and confirm plan-governor is Connected.",
+        "  5. Settings -> MCP -> confirm plan-governor is Connected.",
         "  6. Smoke test: ask Cursor to call create_request.",
         "",
         "Recommended .cursor/mcp.json:",

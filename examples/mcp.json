@@ -1,14 +1,30 @@
 {
   "mcpServers": {
     "plan-governor": {
-      "type": "stdio",
       "command": "python",
       "args": [
-        "./server/main.py"
+        "${workspaceFolder}/launch_mcp_stdio.py"
       ],
+      "cwd": "${workspaceFolder}",
       "env": {
-        "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db"
+        "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
+        "PLAN_GOVERNOR_MCP_TRANSPORT": "stdio"
       }
+    },
+    "plan-governor-windows": {
+      "command": "py",
+      "args": [
+        "-3",
+        "${workspaceFolder}/launch_mcp_stdio.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
+        "PLAN_GOVERNOR_MCP_TRANSPORT": "stdio"
+      }
+    },
+    "plan-governor-http": {
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
