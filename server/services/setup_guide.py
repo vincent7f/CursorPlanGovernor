@@ -107,6 +107,13 @@ def _bat_command(root: Path) -> str | None:
     return None
 
 
+def _sh_command(root: Path) -> str | None:
+    sh_path = root / "start-mcp-server.sh"
+    if sys.platform != "win32" and sh_path.is_file():
+        return str(sh_path.resolve())
+    return None
+
+
 def build_mcp_config(root: Path) -> dict:
     command, args = _python_command(root)
     config = {
@@ -127,6 +134,17 @@ def build_mcp_config(root: Path) -> dict:
         config["mcpServers"]["plan-governor-windows-bat"] = {
             "type": "stdio",
             "command": bat_command,
+            "args": [],
+            "env": {
+                "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
+            },
+        }
+
+    sh_command = _sh_command(root)
+    if sh_command:
+        config["mcpServers"]["plan-governor-shell"] = {
+            "type": "stdio",
+            "command": sh_command,
             "args": [],
             "env": {
                 "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
@@ -242,6 +260,37 @@ def render_setup_markdown(root: Path, mcp_config: dict) -> str:
         "在 Cursor MCP 面板确认 plan-governor 已连接，然后调用 create_request 做冒烟测试。",
     ]
     return "\n".join(lines)
+
+
+def render_cursor_connection_log(project_root: Path | str | None = None) -> list[str]:
+    """Return console lines describing how Cursor should connect to this MCP server."""
+    root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
+
+    mcp_config = build_mcp_config(root)
+    mcp_json_path = root / ".cursor" / "mcp.json"
+    rule_path = root / ".cursor" / "rules" / "plan-governance.mdc"
+    config_json = json.dumps(mcp_config, indent=2, ensure_ascii=False)
+
+    lines = [
+        "Cursor connection guide",
+        "-----------------------",
+        f"Config file: {mcp_json_path}",
+        f"Rule file:   {rule_path}",
+        "",
+        "Steps:",
+        "  1. Create or update .cursor/mcp.json with the config below.",
+        "  2. Optional: add .cursor/rules/plan-governance.mdc",
+        "     (full template via MCP tool get_project_setup_guide).",
+        "  3. Open this project in Cursor.",
+        "  4. Go to Settings -> MCP and confirm plan-governor is Connected.",
+        "  5. Smoke test: ask Cursor to call create_request.",
+        "",
+        "Recommended .cursor/mcp.json:",
+        config_json,
+        "",
+        "Full setup (rules, workflow, all options): call get_project_setup_guide.",
+    ]
+    return lines
 
 
 def build_setup_guide(project_root: str | None = None) -> dict:

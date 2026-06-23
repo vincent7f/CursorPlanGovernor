@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from server.config import get_db_url, get_mcp_transport
 from server.db.repository import PlanGovernorRepository
 from server.db.session import get_session_factory, init_db
 from server.schemas.plan import TreeNodeInput
 from server.services.diff import diff_plan_revisions
 from server.services.markdown import render_plan_markdown
-from server.services.setup_guide import build_setup_guide
+from server.services.setup_guide import build_setup_guide, render_cursor_connection_log
 
 mcp = FastMCP("plan-governor")
 
@@ -333,9 +337,57 @@ def list_review_queue(
         }
 
 
+def _package_version() -> str:
+    try:
+        return version("cursor-plan-governor")
+    except PackageNotFoundError:
+        return "0.1.0"
+
+
+def _mcp_server_url(transport: str) -> str:
+    settings = mcp.settings
+    if transport == "stdio":
+        return f"stdio://{mcp.name}"
+    if transport == "sse":
+        return f"http://{settings.host}:{settings.port}{settings.sse_path}"
+    path = settings.streamable_http_path
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"http://{settings.host}:{settings.port}{path}"
+
+
+def _ready_message(transport: str) -> str:
+    if transport == "stdio":
+        return "Server ready — waiting for MCP client on stdin/stdout."
+    return f"Server ready — listening at {_mcp_server_url(transport)}"
+
+
+def _log_startup_info(transport: str) -> None:
+    """Print service info to stderr (stdio transport uses stdout for MCP)."""
+    tool_names = sorted(tool.name for tool in mcp._tool_manager.list_tools())
+    lines = [
+        "",
+        "Cursor Plan Governor MCP Server",
+        f"  Version:     {_package_version()}",
+        f"  Transport:   {transport}",
+        f"  MCP URL:     {_mcp_server_url(transport)}",
+        f"  Database:    {get_db_url()}",
+        f"  Working dir: {Path.cwd()}",
+        f"  Tools:       {len(tool_names)}",
+    ]
+    for name in tool_names:
+        lines.append(f"    - {name}")
+    lines.extend(["", _ready_message(transport), ""])
+    lines.extend(render_cursor_connection_log())
+    lines.append("")
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
 def main() -> None:
     init_db()
-    mcp.run()
+    transport = get_mcp_transport()
+    _log_startup_info(transport)
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
