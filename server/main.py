@@ -10,7 +10,14 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from server.config import get_db_url, get_mcp_transport
+from server.config import (
+    get_db_url,
+    get_lan_ip,
+    get_mcp_host,
+    get_mcp_http_path,
+    get_mcp_port,
+    get_mcp_transport,
+)
 from server.db.repository import PlanGovernorRepository
 from server.db.session import get_session_factory, init_db
 from server.schemas.plan import TreeNodeInput
@@ -18,7 +25,12 @@ from server.services.diff import diff_plan_revisions
 from server.services.markdown import render_plan_markdown
 from server.services.setup_guide import build_setup_guide, render_cursor_connection_log
 
-mcp = FastMCP("plan-governor")
+mcp = FastMCP(
+    "plan-governor",
+    host=get_mcp_host(),
+    port=get_mcp_port(),
+    streamable_http_path=get_mcp_http_path(),
+)
 
 
 @contextmanager
@@ -344,22 +356,57 @@ def _package_version() -> str:
         return "0.1.0"
 
 
-def _mcp_server_url(transport: str) -> str:
+def _mcp_server_url(transport: str, client_host: str | None = None) -> str:
     settings = mcp.settings
     if transport == "stdio":
         return f"stdio://{mcp.name}"
+
+    host = client_host or settings.host
+    port = settings.port
     if transport == "sse":
-        return f"http://{settings.host}:{settings.port}{settings.sse_path}"
+        return f"http://{host}:{port}{settings.sse_path}"
+
     path = settings.streamable_http_path
     if not path.startswith("/"):
         path = f"/{path}"
-    return f"http://{settings.host}:{settings.port}{path}"
+    return f"http://{host}:{port}{path}"
+
+
+def _network_urls(transport: str) -> list[tuple[str, str]]:
+    if transport == "stdio":
+        return [("MCP URL", _mcp_server_url(transport))]
+
+    port = get_mcp_port()
+    path = get_mcp_http_path()
+    bind_host = get_mcp_host()
+    urls: list[tuple[str, str]] = [
+        ("Host", bind_host),
+        ("Port", str(port)),
+        ("Local URL", f"http://127.0.0.1:{port}{path}"),
+    ]
+
+    lan_ip = get_lan_ip()
+    if lan_ip and bind_host in ("0.0.0.0", "::"):
+        urls.append(("Remote URL", f"http://{lan_ip}:{port}{path}"))
+    elif bind_host not in ("0.0.0.0", "::"):
+        urls.append(("MCP URL", f"http://{bind_host}:{port}{path}"))
+    else:
+        urls.append(("MCP URL", f"http://127.0.0.1:{port}{path}"))
+
+    return urls
 
 
 def _ready_message(transport: str) -> str:
     if transport == "stdio":
         return "Server ready — waiting for MCP client on stdin/stdout."
-    return f"Server ready — listening at {_mcp_server_url(transport)}"
+    local_url = _mcp_server_url(transport, client_host="127.0.0.1")
+    return f"Server ready — listening on {get_mcp_host()}:{get_mcp_port()} (local: {local_url})"
+
+
+def _log_cursor_connection_guide() -> None:
+    lines = render_cursor_connection_log()
+    lines.append("")
+    print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 def _log_startup_info(transport: str) -> None:
@@ -370,23 +417,68 @@ def _log_startup_info(transport: str) -> None:
         "Cursor Plan Governor MCP Server",
         f"  Version:     {_package_version()}",
         f"  Transport:   {transport}",
-        f"  MCP URL:     {_mcp_server_url(transport)}",
-        f"  Database:    {get_db_url()}",
-        f"  Working dir: {Path.cwd()}",
-        f"  Tools:       {len(tool_names)}",
     ]
+    for label, value in _network_urls(transport):
+        lines.append(f"  {label + ':':<12}{value}")
+    lines.extend(
+        [
+            f"  Database:    {get_db_url()}",
+            f"  Working dir: {Path.cwd()}",
+            f"  Tools:       {len(tool_names)}",
+        ]
+    )
     for name in tool_names:
         lines.append(f"    - {name}")
-    lines.extend(["", _ready_message(transport), ""])
-    lines.extend(render_cursor_connection_log())
-    lines.append("")
+    if transport == "stdio":
+        lines.extend(["", _ready_message(transport), ""])
+        lines.extend(render_cursor_connection_log())
+        lines.append("")
     print("\n".join(lines), file=sys.stderr, flush=True)
+
+
+async def _run_uvicorn_with_connection_guide(starlette_app: object) -> None:
+    import uvicorn
+
+    config = uvicorn.Config(
+        starlette_app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+        log_level=mcp.settings.log_level.lower(),
+    )
+    server = uvicorn.Server(config)
+    original_startup = server.startup
+
+    async def startup_with_guide(sockets: list | None = None) -> None:
+        await original_startup(sockets=sockets)
+        _log_cursor_connection_guide()
+
+    server.startup = startup_with_guide
+    await server.serve()
+
+
+async def _run_http_transport_async(transport: str) -> None:
+    if transport == "streamable-http":
+        starlette_app = mcp.streamable_http_app()
+    else:
+        starlette_app = mcp.sse_app()
+    await _run_uvicorn_with_connection_guide(starlette_app)
 
 
 def main() -> None:
     init_db()
     transport = get_mcp_transport()
     _log_startup_info(transport)
+
+    if transport == "stdio":
+        mcp.run(transport=transport)
+        return
+
+    if transport in ("sse", "streamable-http"):
+        import anyio
+
+        anyio.run(_run_http_transport_async, transport)
+        return
+
     mcp.run(transport=transport)
 
 

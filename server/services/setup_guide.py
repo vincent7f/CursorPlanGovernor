@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+from server.config import build_mcp_http_url, get_lan_ip, get_mcp_http_path, get_mcp_port
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 ALL_TOOLS = [
@@ -116,18 +118,29 @@ def _sh_command(root: Path) -> str | None:
 
 def build_mcp_config(root: Path) -> dict:
     command, args = _python_command(root)
+    local_url = f"http://127.0.0.1:{get_mcp_port()}{get_mcp_http_path()}"
     config = {
         "mcpServers": {
             "plan-governor": {
+                "url": local_url,
+            },
+            "plan-governor-stdio": {
                 "type": "stdio",
                 "command": command,
                 "args": args,
                 "env": {
                     "PLAN_GOVERNOR_DB_URL": "sqlite:///./plan_governor.db",
+                    "PLAN_GOVERNOR_MCP_TRANSPORT": "stdio",
                 },
-            }
+            },
         }
     }
+
+    lan_ip = get_lan_ip()
+    if lan_ip:
+        config["mcpServers"]["plan-governor-remote"] = {
+            "url": build_mcp_http_url(host="0.0.0.0"),
+        }
 
     bat_command = _bat_command(root)
     if bat_command:
@@ -278,12 +291,14 @@ def render_cursor_connection_log(project_root: Path | str | None = None) -> list
         f"Rule file:   {rule_path}",
         "",
         "Steps:",
-        "  1. Create or update .cursor/mcp.json with the config below.",
-        "  2. Optional: add .cursor/rules/plan-governance.mdc",
+        "  1. Start the server: ./start-mcp-server.sh",
+        "  2. Create or update .cursor/mcp.json (use plan-governor for local,",
+        "     plan-governor-remote for other machines on your network).",
+        "  3. Optional: add .cursor/rules/plan-governance.mdc",
         "     (full template via MCP tool get_project_setup_guide).",
-        "  3. Open this project in Cursor.",
-        "  4. Go to Settings -> MCP and confirm plan-governor is Connected.",
-        "  5. Smoke test: ask Cursor to call create_request.",
+        "  4. Open this project in Cursor.",
+        "  5. Go to Settings -> MCP and confirm plan-governor is Connected.",
+        "  6. Smoke test: ask Cursor to call create_request.",
         "",
         "Recommended .cursor/mcp.json:",
         config_json,
